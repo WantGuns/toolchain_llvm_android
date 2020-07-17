@@ -13,7 +13,7 @@ Build Instructions
 
 ```
 $ mkdir llvm-toolchain && cd llvm-toolchain
-$ repo init -u https://android.googlesource.com/platform/manifest -b llvm-toolchain
+$ repo init -u https://github.com/WantGuns/manifest -b llvm-r353983
 $ repo sync -c
 $ python toolchain/llvm_android/build.py
 ```
