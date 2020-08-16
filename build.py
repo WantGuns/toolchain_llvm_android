@@ -26,6 +26,7 @@ import string
 import subprocess
 import textwrap
 import utils
+import distutils.spawn
 
 import android_version
 from version import Version
@@ -41,7 +42,7 @@ if ('USE_GOMA' in ORIG_ENV) and (ORIG_ENV['USE_GOMA'] is 'true'):
     USE_GOMA_FOR_STAGE1 = True
     del ORIG_ENV['USE_GOMA']
 
-STAGE2_TARGETS = 'AArch64;ARM;BPF;X86'
+STAGE2_TARGETS = 'AArch64;ARM'
 
 
 def logger():
@@ -144,7 +145,6 @@ def support_headers():
 def clang_prebuilt_version():
     return 'clang-r353983b'
 
-
 def clang_prebuilt_base_dir():
     return utils.android_path('prebuilts/clang/host',
                               utils.build_os_type(), clang_prebuilt_version())
@@ -167,7 +167,6 @@ def arch_from_triple(triple):
 
 def clang_resource_dir(version, arch):
     return os.path.join('lib64', 'clang', version, 'lib', 'linux', arch)
-
 
 def clang_prebuilt_libcxx_headers():
     return utils.android_path(clang_prebuilt_base_dir(), 'include', 'c++', 'v1')
@@ -193,11 +192,13 @@ def cmake_prebuilt_bin_dir():
 
 
 def cmake_bin_path():
-    return os.path.join(cmake_prebuilt_bin_dir(), 'cmake')
+    """ Use host's cmake instead of bundled one """
+    return distutils.spawn.find_executable("cmake")
 
 
 def ninja_bin_path():
-    return os.path.join(cmake_prebuilt_bin_dir(), 'ninja')
+    """ Use host's ninja instead of bundled one """
+    return distutils.spawn.find_executable("ninja")
 
 
 def check_create_path(path):
@@ -221,8 +222,6 @@ def create_sysroots():
     configs = [
         ('arm', 'arm-linux-androideabi'),
         ('arm64', 'aarch64-linux-android'),
-        ('x86_64', 'x86_64-linux-android'),
-        ('x86', 'i686-linux-android'),
     ]
 
     # TODO(srhines): We destroy and recreate the sysroots each time, but this
@@ -299,7 +298,7 @@ def create_sysroots():
                     # created.  Build it for the current arch and copy it to
                     # <libdir>.
                     out_dir = build_libcxxabi(utils.out_path('stage2-install'), arch)
-                    out_path = utils.out_path(out_dir, 'lib', 'libc++abi.a')
+                    out_path = utils.out_path(out_dir, 'lib64', 'libc++abi.a')
                     shutil.copy2(out_path, os.path.join(libdir))
 
 
@@ -345,7 +344,6 @@ def invoke_cmake(out_path, defines, env, cmake_path, target=None, install=True):
 
     # Specify CMAKE_PREFIX_PATH so 'cmake -G Ninja ...' can find the ninja
     # executable.
-    flags += ['-DCMAKE_PREFIX_PATH=' + cmake_prebuilt_bin_dir()]
 
     for key in defines:
         newdef = '-D' + key + '=' + defines[key]
@@ -361,7 +359,6 @@ def invoke_cmake(out_path, defines, env, cmake_path, target=None, install=True):
         ninja_target = [target]
     else:
         ninja_target = []
-
     check_call([cmake_bin_path()] + flags, cwd=out_path, env=env)
     check_call([ninja_bin_path()] + ninja_target, cwd=out_path, env=env)
     if install:
@@ -375,11 +372,6 @@ def cross_compile_configs(stage2_install, platform=False):
         ('aarch64', 'arm64',
          'aarch64/aarch64-linux-android-4.9/aarch64-linux-android',
          'aarch64-linux-android', ''),
-        ('x86_64', 'x86_64',
-         'x86/x86_64-linux-android-4.9/x86_64-linux-android',
-         'x86_64-linux-android', ''),
-        ('i386', 'x86', 'x86/x86_64-linux-android-4.9/x86_64-linux-android',
-         'i686-linux-android', '-m32'),
     ]
 
     cc = os.path.join(stage2_install, 'bin', 'clang')
@@ -466,7 +458,7 @@ def build_sanitizer_map_file(san, arch, lib_dir):
 def build_sanitizer_map_files(stage2_install, clang_version):
     lib_dir = os.path.join(stage2_install,
                            clang_resource_dir(clang_version.long_version(), ''))
-    for arch in ('aarch64', 'arm', 'i686', 'x86_64'):
+    for arch in ('aarch64', 'arm'):
         build_sanitizer_map_file('asan', arch, lib_dir)
     build_sanitizer_map_file('hwasan', 'aarch64', lib_dir)
 
@@ -1023,7 +1015,6 @@ def build_llvm_for_windows(stage1_install,
         extra_defines=windows_extra_defines,
         extra_env=windows_extra_env)
 
-
 def host_sysroot():
     if utils.host_is_darwin():
         return ""
@@ -1070,14 +1061,12 @@ def host_gcc_toolchain_flags(host_os, is_32_bit=False):
         gccVersion = '4.8.3'
 
         # gcc-toolchain is only needed for Linux
-        cflags.append('--gcc-toolchain={gccRoot}')
     elif host_os == 'windows-x86':
         gccRoot = utils.android_path('prebuilts/gcc', utils.build_os_type(),
                                      'host/x86_64-w64-mingw32-4.8')
         gccTriple = 'x86_64-w64-mingw32'
         gccVersion = '4.8.3'
 
-    cflags.append('-B{gccRoot}/{gccTriple}/bin')
 
     gccLibDir = '{gccRoot}/lib/gcc/{gccTriple}/{gccVersion}'
     gccBuiltinDir = '{gccRoot}/{gccTriple}/lib64'
@@ -1085,17 +1074,17 @@ def host_gcc_toolchain_flags(host_os, is_32_bit=False):
         gccLibDir += '/32'
         gccBuiltinDir = gccBuiltinDir.replace('lib64', 'lib32')
 
-    ldflags.extend(('-B' + gccLibDir,
-                    '-L' + gccLibDir,
-                    '-B' + gccBuiltinDir,
-                    '-L' + gccBuiltinDir,
-                    '-fuse-ld=lld',
-                    ))
+    # ldflags.extend(('-B' + gccLibDir,
+    #                 '-L' + gccLibDir,
+    #                 '-B' + gccBuiltinDir,
+    #                 '-L' + gccBuiltinDir,
+    #                 '-fuse-ld=lld',
+    #                 ))
 
-    cflags = formatFlags(cflags, gccRoot=gccRoot, gccTriple=gccTriple,
-                         gccVersion=gccVersion)
-    ldflags = formatFlags(ldflags, gccRoot=gccRoot, gccTriple=gccTriple,
-                          gccVersion=gccVersion)
+    # cflags = formatFlags(cflags, gccRoot=gccRoot, gccTriple=gccTriple,
+    #                      gccVersion=gccVersion)
+    # ldflags = formatFlags(ldflags, gccRoot=gccRoot, gccTriple=gccTriple,
+    #                       gccVersion=gccVersion)
     return cflags, ldflags
 
 
@@ -1104,20 +1093,23 @@ def build_stage1(stage1_install, build_name, build_llvm_tools=False):
     cflags, ldflags = host_gcc_toolchain_flags(utils.build_os_type())
 
     stage1_path = utils.out_path('stage1')
-    stage1_targets = 'X86'
+    stage1_targets = 'AArch64'
 
     stage1_extra_defines = dict()
     stage1_extra_defines['LLVM_BUILD_RUNTIME'] = 'ON'
     stage1_extra_defines['CLANG_ENABLE_ARCMT'] = 'OFF'
     stage1_extra_defines['CLANG_ENABLE_STATIC_ANALYZER'] = 'OFF'
-    stage1_extra_defines['CMAKE_C_COMPILER'] = os.path.join(
-        clang_prebuilt_bin_dir(), 'clang')
-    stage1_extra_defines['CMAKE_CXX_COMPILER'] = os.path.join(
-        clang_prebuilt_bin_dir(), 'clang++')
+    
+    # Use Host's CC and CXX instead of the bundled one.
+    stage1_extra_defines['CMAKE_C_COMPILER'] = \
+        distutils.spawn.find_executable("clang")
+    stage1_extra_defines['CMAKE_CXX_COMPILER'] = \
+        distutils.spawn.find_executable("clang++")
+
     stage1_extra_defines['LLVM_TOOL_CLANG_TOOLS_EXTRA_BUILD'] = 'OFF'
     stage1_extra_defines['LLVM_TOOL_OPENMP_BUILD'] = 'OFF'
 
-    update_cmake_sysroot_flags(stage1_extra_defines, host_sysroot())
+    # TODO: sharkbait
 
     if not utils.host_is_darwin():
         stage1_extra_defines['LLVM_ENABLE_LLD'] = 'ON'
@@ -1200,7 +1192,6 @@ def build_stage2(stage1_install,
     stage2_extra_defines['SANITIZER_ALLOW_CXXABI'] = 'OFF'
     stage2_extra_defines['LIBOMP_ENABLE_SHARED'] = 'FALSE'
 
-    update_cmake_sysroot_flags(stage2_extra_defines, host_sysroot())
 
     if not utils.host_is_darwin():
         stage2_extra_defines['LLVM_ENABLE_LLD'] = 'ON'
@@ -1293,7 +1284,6 @@ def build_runtimes(stage2_install):
     version = extract_clang_version(stage2_install)
     build_crts(stage2_install, version)
     build_crts(stage2_install, version, ndk_cxx=True)
-    build_crts_host_i686(stage2_install, version)
     build_libfuzzers(stage2_install, version)
     build_libfuzzers(stage2_install, version, ndk_cxx=True)
     build_libomp(stage2_install, version)
